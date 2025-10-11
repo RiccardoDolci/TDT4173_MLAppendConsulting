@@ -5,6 +5,10 @@ import seaborn as sns
 # Define the file path (assuming it's in a data/kernel/ path structure)
 FILE_PATH = 'data/kernel/purchase_orders.csv'
 PLOT_PATH = 'graph/purchase_order_lead_time_distribution.png'
+merged_df = pd.read_csv('data/mod_data/merged_clean_data.csv', sep=';')
+
+# Convert 'date_arrival' to datetime objects
+
 
 # --- 1. Load Data and Convert Dates ---
 print("Loading purchase orders data...")
@@ -18,7 +22,39 @@ except FileNotFoundError:
 # Convert required date columns to datetime objects
 orders_df['delivery_date'] = pd.to_datetime(orders_df['delivery_date'], errors='coerce', utc=True)
 orders_df['created_date_time'] = pd.to_datetime(orders_df['created_date_time'], errors='coerce', utc=True)
+merged_df['date_arrival'] = pd.to_datetime(merged_df['date_arrival'], errors='coerce')
+# Extract the year from the 'date_arrival'
+merged_df['year'] = merged_df['date_arrival'].dt.year
 
+# Group by year and perform the aggregations
+yearly_analysis = merged_df.groupby('year').agg(
+    unique_rm_ids=('rm_id', 'nunique'),
+    total_net_weight=('net_weight', 'sum'),
+    suppliers_count=('supplier_id', 'nunique')
+).reset_index()
+
+# Display the results
+print("Yearly Analysis of Raw Material Receivals:")
+print(yearly_analysis)
+
+# Plotting the trends over the years
+fig, ax1 = plt.subplots(figsize=(12, 6))
+
+# Plotting total net weight
+ax1.set_xlabel('Year')
+ax1.set_ylabel('Total Net Weight (kg)', color='tab:blue')
+ax1.bar(yearly_analysis['year'], yearly_analysis['total_net_weight'], color='tab:blue', alpha=0.6, label='Total Net Weight')
+ax1.tick_params(axis='y', labelcolor='tab:blue')
+
+# Creating a second y-axis to plot the number of unique rm_ids
+ax2 = ax1.twinx()
+ax2.set_ylabel('Number of Unique rm_ids', color='tab:red')
+ax2.plot(yearly_analysis['year'], yearly_analysis['unique_rm_ids'], color='tab:red', marker='o', linestyle='-', label='Unique rm_ids')
+ax2.tick_params(axis='y', labelcolor='tab:red')
+
+fig.tight_layout()
+plt.title('Yearly Trends of Net Weight and Unique Raw Materials')
+plt.show()
 
 # --- 2. Calculate Lead Time ---
 # Lead Time = Expected Delivery Date - Creation Date
