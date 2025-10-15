@@ -14,7 +14,7 @@ ml_client = MLClient.from_config(credential=DefaultAzureCredential())
 # --- Load the dataset from the Azure ML Data Asset ---
 # The name and specific version number from the URI
 asset_name = "model_ready_data"
-asset_version = "3"
+asset_version = "8"
 
 # Get the data asset using its exact name and version
 data_asset = ml_client.data.get(name=asset_name, version=asset_version)
@@ -26,7 +26,7 @@ df['date_arrival'] = pd.to_datetime(df['date_arrival'], utc=True)
 # --- 2. Data Type Conversion ---
 print("Converting data types...")
 # Ensure categorical columns are treated as such by the model
-categorical_cols = ['rm_id', 'month', 'day', 'day_of_week', 'week_of_year','is_closure_day']
+categorical_cols = ['rm_id', 'day', 'month', 'day_of_week', 'week_of_year','is_closure_day']
 for col in categorical_cols:
     df[col] = df[col].astype('category')
 
@@ -45,12 +45,11 @@ print(f"Validation set shape: {val_df.shape}")
 # NOTE: We remove 'date_arrival' as it's not a direct feature for the tree model
 features_to_use = [
     'rm_id', 'month', 'day', 'day_of_week', 'week_of_year','is_closure_day',
-    'lag_7_days', 'lag_14_days', 'lag_28_days',
+    'lag_1_day', 'lag_7_days', 'lag_14_days', 'lag_28_days',
     'rolling_mean_7_days', 'rolling_mean_14_days', 'rolling_mean_28_days',
-    'rolling_std_7_days', 'rolling_std_14_days', 'rolling_std_28_days',
-    'yearly_cum_net_weight', 'monthly_cum_net_weight', 'time_since_last_delivery'
+    'rolling_std_7_days', 'rolling_std_14_days', 'rolling_std_28_days'
 ]
-target_col = 'net_weight'
+target_col = 'cum_net_weight'
 
 X_train = train_df[features_to_use]
 y_train = train_df[target_col]
