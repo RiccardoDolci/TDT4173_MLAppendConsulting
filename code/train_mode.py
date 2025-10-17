@@ -26,7 +26,7 @@ df['date_arrival'] = pd.to_datetime(df['date_arrival'], utc=True)
 # --- 2. Data Type Conversion ---
 print("Converting data types...")
 # Ensure categorical columns are treated as such by the model
-categorical_cols = ['rm_id', 'day', 'month', 'day_of_week', 'week_of_year','is_closure_day']
+categorical_cols = ['rm_id', 'day', 'month', 'day_of_week', 'week_of_year','is_closure_day', 'first_day_of_year']
 for col in categorical_cols:
     df[col] = df[col].astype('category')
 
@@ -45,6 +45,7 @@ print(f"Validation set shape: {val_df.shape}")
 # NOTE: We remove 'date_arrival' as it's not a direct feature for the tree model
 features_to_use = [
     'rm_id', 'month', 'day', 'day_of_week', 'week_of_year','is_closure_day',
+    'first_day_of_year',
     'lag_1_day', 'lag_7_days', 'lag_14_days', 'lag_28_days',
     'rolling_mean_7_days', 'rolling_mean_14_days', 'rolling_mean_28_days',
     'rolling_std_7_days', 'rolling_std_14_days', 'rolling_std_28_days'

@@ -37,6 +37,32 @@ data_asset = ml_client.data.get(name=asset_name, version=asset_version)
 historical_df = pd.read_csv(data_asset.path)
 print("Successfully loaded data from Azure.")
 
+# Lazy load fallback merged_clean_data (used to initialize features when historical_df lacks pre-start history)
+merged_fallback = None
+merged_path = Path('data') / 'mod_data' / 'merged_clean_data.csv'
+if merged_path.exists():
+    try:
+        merged_fallback = pd.read_csv(merged_path)
+        # Parse as UTC-aware timestamps and normalize to midnight UTC
+        merged_fallback['date_arrival'] = pd.to_datetime(merged_fallback['date_arrival'], errors='coerce', utc=True)
+        merged_fallback['date_arrival'] = merged_fallback['date_arrival'].dt.normalize()
+        # aggregate net_weight per rm_id per date
+        merged_daily = (
+            merged_fallback.groupby(['rm_id', 'date_arrival'], as_index=False)['net_weight'].sum()
+        )
+        # compute yearly cumulative per rm_id
+        merged_daily['year'] = merged_daily['date_arrival'].dt.year
+        merged_daily = merged_daily.sort_values(['rm_id', 'date_arrival'])
+        merged_daily['cum_net_weight'] = merged_daily.groupby(['rm_id', 'year'])['net_weight'].cumsum()
+        # ensure merged_daily date dtype is timezone-aware UTC
+        merged_daily['date_arrival'] = pd.to_datetime(merged_daily['date_arrival'], utc=True)
+        merged_daily['date_arrival'] = merged_daily['date_arrival'].dt.normalize()
+    except Exception:
+        merged_fallback = None
+        merged_daily = None
+else:
+    merged_daily = None
+
 # Load the prediction mapping file which defines the required output
 try:
     prediction_mapping = pd.read_csv('prediction_mapping.csv')
@@ -56,7 +82,7 @@ features_to_use = model.feature_name_
 print(f"Model expects the following features: {features_to_use}")
 
 # *** Define the list of categorical columns ***
-categorical_cols = ['rm_id', 'month', 'day', 'day_of_week', 'week_of_year', 'is_closure_day']
+categorical_cols = ['rm_id', 'month', 'day', 'day_of_week', 'week_of_year', 'is_closure_day', 'first_day_of_year']
 
 live_data_df = historical_df.copy()
 
@@ -84,15 +110,23 @@ else:
 # --- 3. Dynamic multi-day forecasting per rm_id ---
 print('\n--- Running dynamic forecasts according to prediction_mapping ---')
 # Ensure dates in mapping are datetimes
-prediction_mapping['forecast_start_date'] = pd.to_datetime(prediction_mapping['forecast_start_date'])
-prediction_mapping['forecast_end_date'] = pd.to_datetime(prediction_mapping['forecast_end_date'])
+# Make the mapping dates UTC-aware and normalized to midnight UTC for safe comparisons
+prediction_mapping['forecast_start_date'] = pd.to_datetime(prediction_mapping['forecast_start_date'], utc=True).dt.normalize()
+prediction_mapping['forecast_end_date'] = pd.to_datetime(prediction_mapping['forecast_end_date'], utc=True).dt.normalize()
+
+# Use rows strictly before each rm_id's forecast start_date to build initial history
+# (no global anchor). If not enough recent history exists, fall back to the same
+# calendar window one year before, then to the last known row or zero.
 
 # Prepare a lookup of historical last-known features per rm_id
 # historical_df should contain the model-ready features up to its last date_arrival
-historical_df['date_arrival'] = pd.to_datetime(historical_df['date_arrival'])
+# Ensure historical_df date_arrival is UTC-aware and normalized to midnight UTC
+historical_df['date_arrival'] = pd.to_datetime(historical_df['date_arrival'], utc=True)
+historical_df['date_arrival'] = historical_df['date_arrival'].dt.normalize()
 last_known = historical_df.sort_values('date_arrival').groupby('rm_id').tail(1).set_index('rm_id')
 
 results = []
+debug_rows = []
 
 # For each rm_id in mapping, simulate forward day-by-day and collect cum_net_weight at requested end dates
 for rm_id, group in prediction_mapping.groupby('rm_id'):
@@ -107,32 +141,58 @@ for rm_id, group in prediction_mapping.groupby('rm_id'):
             results.append({'ID': row['ID'], 'predicted_weight': 0.0})
         continue
 
-    # initialize state from last known row
-    state = last_known.loc[rm_id].to_dict()
+    # Build rm-specific history and initialize state strictly from data BEFORE start_date
+    hist_df_rm = historical_df.loc[historical_df['rm_id'] == rm_id].sort_values('date_arrival')
 
-    # build date_arrival index and a dict to keep predictions per date_arrival
+    # rows strictly before forecast start_date
+    hist_before_start = hist_df_rm.loc[hist_df_rm['date_arrival'] < start_date]
+
+    # Prefer the last-known row before start_date to initialize state
+    if len(hist_before_start) > 0:
+        state = hist_before_start.iloc[-1].to_dict()
+    else:
+        # Fallback: try the same calendar window one year before the start_date
+        prev_year_anchor = start_date - pd.Timedelta(days=365)
+        window_start = prev_year_anchor - pd.Timedelta(days=27)
+        window_end = prev_year_anchor
+        prev_year_window = hist_df_rm.loc[(hist_df_rm['date_arrival'] >= window_start) & (hist_df_rm['date_arrival'] <= window_end)]
+        if len(prev_year_window) > 0:
+            state = prev_year_window.iloc[-1].to_dict()
+        else:
+            # As a last resort, try to initialize from merged_clean_data fallback
+            if merged_daily is not None:
+                merged_rm = merged_daily.loc[merged_daily['rm_id'] == rm_id].sort_values('date_arrival')
+                merged_before = merged_rm.loc[merged_rm['date_arrival'] < start_date]
+                if len(merged_before) > 0:
+                    # use last row before start_date
+                    state = merged_before.iloc[-1].to_dict()
+                    # set hist_values to last up-to-28 cum_net_weight values
+                    hist_values = merged_before['cum_net_weight'].astype(float).tolist()[-28:]
+                else:
+                    if rm_id in last_known.index:
+                        state = last_known.loc[rm_id].to_dict()
+                    else:
+                        state = {'cum_net_weight': 0.0}
+            else:
+                if rm_id in last_known.index:
+                    state = last_known.loc[rm_id].to_dict()
+                else:
+                    state = {'cum_net_weight': 0.0}
+
     dates = pd.date_range(start=start_date, end=end_date, freq='D')
     date_preds = {}
-
-    # initialize previous cumulative for this rm_id from last-known state (if present)
     prev_cum = float(state.get('cum_net_weight', 0.0))
 
-    # Build recent history (most recent last) of cumulative values for this rm_id
-    hist_values = (
-        historical_df.loc[historical_df['rm_id'] == rm_id]
-        .sort_values('date_arrival')['cum_net_weight']
-        .astype(float)
-        .tolist()
-    )
-    # Ensure history has at least the last-known cumulative as last element
+    hist_values = hist_before_start['cum_net_weight'].astype(float).tolist() if len(hist_before_start) > 0 else []
+    if len(hist_values) < 1 and 'prev_year_window' in locals() and len(prev_year_window) > 0:
+        hist_values = prev_year_window['cum_net_weight'].astype(float).tolist()
+
+    # Ensure at least one value (the state cum_net_weight) is present and trim to 28
     if len(hist_values) == 0:
         hist_values = [prev_cum]
     else:
-        # If historical last value differs from state cum_net_weight, prefer state
         if float(hist_values[-1]) != prev_cum:
             hist_values.append(prev_cum)
-
-    # keep only last 28 days of history (we need up to lag_28)
     hist_values = hist_values[-28:]
 
     for current_date in dates:
@@ -152,6 +212,8 @@ for rm_id, group in prediction_mapping.groupby('rm_id'):
             feat['week_of_year'] = int(current_date.isocalendar()[1])
         # closure/holiday feature derived from 2024 closure map loaded from historical data
         feat['is_closure_day'] = int(closure_2024_map.get(current_date.normalize().date(), 0))
+        # first day of year flag
+        feat['first_day_of_year'] = int((current_date.month == 1) and (current_date.day == 1))
 
         # Compute lag and rolling features from history (hist_values)
         # lag_1_day is previous day's cumulative
@@ -222,6 +284,21 @@ for rm_id, group in prediction_mapping.groupby('rm_id'):
         # Predict cumulative net weight for this date_arrival
         pred = float(model.predict(X)[0])
 
+        # collect debug info for the first predicted day for this rm_id
+        if current_date == dates[0]:
+            try:
+                # serialize the X row as a dict of simple scalars
+                x_row = {c: (str(X.iloc[0][c]) if pd.api.types.is_categorical_dtype(X[c]) else float(X.iloc[0][c]) if np.issubdtype(type(X.iloc[0][c]), np.number) else str(X.iloc[0][c])) for c in X.columns}
+            except Exception:
+                x_row = {c: str(X.iloc[0][c]) for c in X.columns}
+            debug_rows.append({
+                'rm_id': rm_id,
+                'start_date': start_date.strftime('%Y-%m-%d'),
+                'initial_hist_values': ';'.join(str(v) for v in hist_values),
+                'first_X': str(x_row),
+                'first_pred': pred
+            })
+
         # enforce non-negativity (clip negatives to zero)
         if pred < 0.0:
             pred = 0.0
@@ -261,5 +338,11 @@ for rm_id, group in prediction_mapping.groupby('rm_id'):
 submission = pd.DataFrame(results).sort_values('ID')
 submission.to_csv('outputs/predictions_submission.csv', index=False)
 print(f"Saved submission to outputs/predictions_submission.csv ({submission.shape[0]} rows)")
+
+# Save debug CSV
+debug_df = pd.DataFrame(debug_rows)
+debug_path = Path('outputs') / 'prediction_debug.csv'
+debug_df.to_csv(debug_path, index=False)
+print(f"Saved prediction debug to: {debug_path} ({len(debug_df)} rows)")
 
 

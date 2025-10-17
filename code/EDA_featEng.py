@@ -12,24 +12,38 @@ mapping_rm_ids = mapping['rm_id'].unique()
 rm_ids = df.loc[df['rm_id'].isin(mapping_rm_ids), 'rm_id'].unique()
 print(f"Using {len(rm_ids)} rm_id(s) present in prediction_mapping (filtered from {df['rm_id'].nunique()})")
 # ------------------------------------------------------------------
-# Create dataset: one row per (rm_id, date) for 2019-01-01 .. 2024-12-31
+# Create dataset: one row per (rm_id, date) for 2019-01-01 .. 2024-12-31 maybe try from 2012 or 2021
 # with yearly-reset cumulative net_weight per rm_id (inclusive of date)
 # We could include also supplier_id if needed, how? many deliveries in one day so not unique
 # We can also do it till 31 May for each year because prediction will be till then
 # ------------------------------------------------------------------
 print("\n--- Building yearly cumulative net_weight dataset (2019-01-01 to 2024-12-31) ---")
-# date range requested by user (timezone-aware UTC to match source datetimes)
-dates_req = pd.date_range(start='2019-01-01', end='2024-12-31', freq='D', tz='UTC')
+# date range requested by user
+# Use timezone-naive timestamps throughout this script to avoid tz-localize/tz-convert
+# issues when manipulating with Timedelta/normalize. The source datetimes are
+# normalized below, so naive dates are sufficient for grouping and merging.
+start_req = pd.Timestamp('2019-01-01', tz='UTC')
+end_req = pd.Timestamp('2024-12-31', tz='UTC')
+dates_req = pd.date_range(start=start_req, end=end_req, freq='D', tz='UTC')
 
-# Build master grid for rm_id x requested dates
-all_combinations_req = product(rm_ids, dates_req)
-cum_master = pd.DataFrame(all_combinations_req, columns=['rm_id', 'date_arrival'])
-# ensure 'date' column is timezone-aware (should already be from dates_req)
+# To correctly initialize lag/rolling features we include a padding of 28 days
+# before the requested start date so the first rows can compute statistics from
+# prior data instead of starting from zeros.
+pad_days = 28
+start_ext = (start_req - pd.Timedelta(days=pad_days)).normalize()
+dates_ext = pd.date_range(start=start_ext, end=end_req, freq='D', tz='UTC')
+
+# Build master grid for rm_id x extended dates
+all_combinations_ext = product(rm_ids, dates_ext)
+cum_master = pd.DataFrame(all_combinations_ext, columns=['rm_id', 'date_arrival'])
+# keep date_arrival as timezone-naive timestamps to match normalized source dates
+# keep date_arrival as timezone-aware UTC timestamps to match normalized source dates
 cum_master['date_arrival'] = pd.to_datetime(cum_master['date_arrival'], utc=True)
 
 # Ensure source df has datetime-normalized dates and net_weight
 df_net = df.copy()
-df_net['date_arrival'] = pd.to_datetime(df_net['date_arrival'], errors='coerce')
+# parse into UTC-aware timestamps to match the master grid
+df_net['date_arrival'] = pd.to_datetime(df_net['date_arrival'], errors='coerce', utc=True)
 df_net['date_arrival'] = df_net['date_arrival'].dt.normalize()
 
 # Aggregate net_weight per rm_id per date (sum if multiple receivals same day)
@@ -42,11 +56,10 @@ daily_net = (
 final_df = pd.merge(cum_master, daily_net, on=['rm_id', 'date_arrival'], how='left')
 final_df['net_weight'] = final_df['net_weight'].fillna(0)
 
-# Year column for yearly reset
-final_df['year'] = final_df['date_arrival'].dt.year
 
 # Sort and compute yearly cumulative sum per rm_id
 final_df = final_df.sort_values(by=['rm_id', 'date_arrival'])
+final_df['year'] = final_df['date_arrival'].dt.year
 final_df['cum_net_weight'] = final_df.groupby(['rm_id', 'year'])['net_weight'].cumsum()
 
 # Keep only requested columns
@@ -64,6 +77,9 @@ final_df['month'] = final_df['date_arrival'].dt.month
 final_df['day'] = final_df['date_arrival'].dt.day
 final_df['day_of_week'] = final_df['date_arrival'].dt.dayofweek
 final_df['week_of_year'] = final_df['date_arrival'].dt.isocalendar().week
+
+# New feature: first day of year flag (Jan 1)
+final_df['first_day_of_year'] = ((final_df['date_arrival'].dt.month == 1) & (final_df['date_arrival'].dt.day == 1)).astype(int)
 
 # --- Engineer a Closure/Holiday Feature ---
 print("Engineering closure/holiday feature...")
@@ -108,12 +124,16 @@ print("\n--- Finalizing and Saving Dataset ---")
 features_to_keep = [
     'rm_id', 'cum_net_weight', 'date_arrival', 'day', 'month',
     'day_of_week', 'week_of_year', 'is_closure_day',
+    'first_day_of_year',
     'lag_1_day', 'lag_7_days', 'lag_14_days', 'lag_28_days',
     'rolling_mean_7_days', 'rolling_mean_14_days', 'rolling_mean_28_days',
     'rolling_std_7_days', 'rolling_std_14_days', 'rolling_std_28_days', 
 ]
 
-model_ready_df = final_df[features_to_keep]
+# After computing rolling features using the extended window, drop the padded rows
+# so the saved dataset starts at the requested date range but has correctly
+# initialized lag/rolling values coming from prior history.
+model_ready_df = final_df.loc[final_df['date_arrival'] >= start_req, features_to_keep]
 
 # Save to Feather format for speed and type preservation
 output_path = 'data/mod_data/model_ready_data.csv'
