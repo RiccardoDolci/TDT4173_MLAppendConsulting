@@ -20,7 +20,7 @@ asset_version = "8"
 data_asset = ml_client.data.get(name=asset_name, version=asset_version)
 
 # Read the data into pandas from the cloud path
-df = pd.read_csv(data_asset.path)
+df = pd.read_csv(data_asset.path, sep=',', thousands='.')
 print("Successfully loaded data from Azure.")
 df['date_arrival'] = pd.to_datetime(df['date_arrival'], utc=True)
 # --- 2. Data Type Conversion ---

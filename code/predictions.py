@@ -34,7 +34,7 @@ asset_version = "8"
 data_asset = ml_client.data.get(name=asset_name, version=asset_version)
 
 # Read the data into pandas from the cloud path
-historical_df = pd.read_csv(data_asset.path)
+historical_df = pd.read_csv(data_asset.path, sep=',', thousands='.')
 print("Successfully loaded data from Azure.")
 
 # Lazy load fallback merged_clean_data (used to initialize features when historical_df lacks pre-start history)

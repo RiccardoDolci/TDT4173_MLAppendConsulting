@@ -4,10 +4,10 @@ import numpy as np
 from itertools import product
 
 print("--- Loading Data ---")
-df = pd.read_csv('data/mod_data/merged_clean_data.csv', sep=',')
+df = pd.read_csv('data/mod_data/merged_clean_data.csv', sep=',',thousands='.')
 
 # Limit to rm_ids that appear in the prediction mapping (only forecasted rm_ids)
-mapping = pd.read_csv('data/prediction_mapping.csv')
+mapping = pd.read_csv('data/prediction_mapping.csv', sep=',',thousands='.')
 mapping_rm_ids = mapping['rm_id'].unique()
 rm_ids = df.loc[df['rm_id'].isin(mapping_rm_ids), 'rm_id'].unique()
 print(f"Using {len(rm_ids)} rm_id(s) present in prediction_mapping (filtered from {df['rm_id'].nunique()})")

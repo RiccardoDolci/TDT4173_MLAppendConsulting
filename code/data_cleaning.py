@@ -3,8 +3,8 @@ import pandas as pd
 import numpy as np
 
 # Load your datasets first
-receivals_df = pd.read_csv('data/mod_data/mod_receivals.csv', sep=';')
-orders_df = pd.read_csv('data/mod_data/mod_purchase_orders.csv', sep=';')
+receivals_df = pd.read_csv('data/mod_data/mod_receivals.csv', sep=';',thousands='.')
+orders_df = pd.read_csv('data/mod_data/mod_purchase_orders.csv', sep=';',thousands='.')
 
 # Convert the columns using pd.to_datetime handling potential errors
 receivals_df['date_arrival'] = pd.to_datetime(receivals_df['date_arrival'], errors='coerce', utc=True)
