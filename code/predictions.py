@@ -4,16 +4,11 @@ import numpy as np
 import lightgbm as lgb
 import joblib
 from pathlib import Path
-from azure.ai.ml import MLClient
-from azure.identity import DefaultAzureCredential
 
 print("--- Starting Prediction Script ---")
 
 # --- 1. Load Model and Data ---
 print("Loading trained model and historical data...")
-
-# This authenticates you automatically inside an Azure ML environment
-ml_client = MLClient.from_config(credential=DefaultAzureCredential())
 # Define paths
 outputs_dir = Path('outputs')
 model_dir = outputs_dir / 'model'
@@ -25,21 +20,14 @@ try:
 except FileNotFoundError:
     print(f"ERROR: Model file not found at '{model_dir / 'best_lgbm_model.joblib'}'. Please run the training script first.")
     exit()
-# --- Load the dataset from the Azure ML Data Asset ---
-# The name and specific version number from the URI
-asset_name = "model_ready_data"
-asset_version = "8"
 
-# Get the data asset using its exact name and version
-data_asset = ml_client.data.get(name=asset_name, version=asset_version)
+# Read the data into pandas
+historical_df = pd.read_csv('data/mod_data/receivals_clean_data.csv')
+print("Successfully loaded data.")
 
-# Read the data into pandas from the cloud path
-historical_df = pd.read_csv(data_asset.path, sep=',', thousands='.')
-print("Successfully loaded data from Azure.")
-
-# Lazy load fallback merged_clean_data (used to initialize features when historical_df lacks pre-start history)
+# Lazy load fallback receivals_clean_data (used to initialize features when historical_df lacks pre-start history)
 merged_fallback = None
-merged_path = Path('data') / 'mod_data' / 'merged_clean_data.csv'
+merged_path = Path('data') / 'mod_data' / 'receivals_clean_data.csv'
 if merged_path.exists():
     try:
         merged_fallback = pd.read_csv(merged_path)

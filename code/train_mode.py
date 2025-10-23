@@ -2,25 +2,14 @@ import pandas as pd
 import lightgbm as lgb
 import numpy as np
 import matplotlib.pyplot as plt
-from azure.ai.ml import MLClient
-from azure.identity import DefaultAzureCredential
 from pathlib import Path
 import joblib
 from pathlib import Path
 import optuna
 
-# This authenticates you automatically inside an Azure ML environment
-ml_client = MLClient.from_config(credential=DefaultAzureCredential())
-# --- Load the dataset from the Azure ML Data Asset ---
-# The name and specific version number from the URI
-asset_name = "model_ready_data"
-asset_version = "8"
-
-# Get the data asset using its exact name and version
-data_asset = ml_client.data.get(name=asset_name, version=asset_version)
-
-# Read the data into pandas from the cloud path
-df = pd.read_csv(data_asset.path, sep=',', thousands='.')
+# --- Load the dataset
+# Read the data into pandas 
+df = pd.read_csv('data/mod_data/merged_clean_data.csv')
 print("Successfully loaded data from Azure.")
 df['date_arrival'] = pd.to_datetime(df['date_arrival'], utc=True)
 # --- 2. Data Type Conversion ---

@@ -3,9 +3,9 @@ import pandas as pd
 import numpy as np
 
 # Load your datasets first
-receivals_df = pd.read_csv('data/mod_data/mod_receivals.csv', sep=';',thousands='.')
-orders_df = pd.read_csv('data/mod_data/mod_purchase_orders.csv', sep=';',thousands='.')
-
+receivals_df = pd.read_csv('data/kernel/receivals.csv')
+orders_df = pd.read_csv('data/kernel/purchase_orders.csv')
+print(receivals_df.head())
 # Convert the columns using pd.to_datetime handling potential errors
 receivals_df['date_arrival'] = pd.to_datetime(receivals_df['date_arrival'], errors='coerce', utc=True)
 orders_df['delivery_date'] = pd.to_datetime(orders_df['delivery_date'], errors='coerce', utc=True)
@@ -61,11 +61,11 @@ print("Pounds have been successfully converted to KG.")
 merge_keys = ['purchase_order_id', 'purchase_order_item_no']
 
 # normalize types: prefer integers if there are no missing values
-receivals_df['purchase_order_id'] = receivals_df['purchase_order_id'].astype('Int64')  # nullable int
-receivals_df['purchase_order_item_no'] = receivals_df['purchase_order_item_no'].astype('Int64')
+# receivals_df['purchase_order_id'] = receivals_df['purchase_order_id'].astype('Int64')  # nullable int
+# receivals_df['purchase_order_item_no'] = receivals_df['purchase_order_item_no'].astype('Int64')
 
-orders_df['purchase_order_id'] = orders_df['purchase_order_id'].astype('Int64')
-orders_df['purchase_order_item_no'] = orders_df['purchase_order_item_no'].astype('Int64')
+# orders_df['purchase_order_id'] = orders_df['purchase_order_id'].astype('Int64')
+# orders_df['purchase_order_item_no'] = orders_df['purchase_order_item_no'].astype('Int64')
 # Perform the merge
 merged_df_debug = pd.merge(
     receivals_df,
@@ -86,10 +86,11 @@ print(f"Shape of merged_df: {merged_df_debug.shape}")
 unmatched_receivals = merged_df_debug[merged_df_debug['_merge'] == 'left_only']
 print(unmatched_receivals.head())
 # Define the path for your new, clean file
-output_path = 'data/mod_data/merged_clean_data.csv'
-
+output_path1 = 'data/mod_data/merged_clean_data.csv'
+output_path2 = 'data/mod_data/receivals_clean_data.csv'
 # Save the DataFrame to a new CSV file
 # index=False prevents pandas from writing the DataFrame index as a column
-merged_df_debug.to_csv(output_path, index=False)
-
-print(f"Merged data successfully saved to {output_path}")
+merged_df_debug.to_csv(output_path1, index=False)
+receivals_df.to_csv(output_path2, index=False)
+print(f"Merged data successfully saved to {output_path1}")
+print(f"Receivals clean data successfully saved to {output_path2}")
