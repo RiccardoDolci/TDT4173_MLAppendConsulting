@@ -53,7 +53,7 @@ else:
 
 # Load the prediction mapping file which defines the required output
 try:
-    prediction_mapping = pd.read_csv('prediction_mapping.csv')
+    prediction_mapping = pd.read_csv('data/prediction_mapping.csv')
 except FileNotFoundError:
     print(f"ERROR: 'sample_submission.csv' not found")
     exit()
