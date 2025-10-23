@@ -22,12 +22,12 @@ except FileNotFoundError:
     exit()
 
 # Read the data into pandas
-historical_df = pd.read_csv('data/mod_data/receivals_clean_data.csv')
+historical_df = pd.read_csv('data/mod_data/model_ready_data.csv')
 print("Successfully loaded data.")
 
-# Lazy load fallback receivals_clean_data (used to initialize features when historical_df lacks pre-start history)
+# Lazy load fallback model_ready_data (used to initialize features when historical_df lacks pre-start history)
 merged_fallback = None
-merged_path = Path('data') / 'mod_data' / 'receivals_clean_data.csv'
+merged_path = Path('data') / 'mod_data' / 'model_ready_data.csv'
 if merged_path.exists():
     try:
         merged_fallback = pd.read_csv(merged_path)

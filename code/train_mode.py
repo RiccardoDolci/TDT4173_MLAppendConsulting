@@ -9,7 +9,7 @@ import optuna
 
 # --- Load the dataset
 # Read the data into pandas 
-df = pd.read_csv('data/mod_data/merged_clean_data.csv')
+df = pd.read_csv('data/mod_data/model_ready_data.csv')
 print("Successfully loaded data from Azure.")
 df['date_arrival'] = pd.to_datetime(df['date_arrival'], utc=True)
 # --- 2. Data Type Conversion ---
