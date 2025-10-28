@@ -128,21 +128,16 @@ def aggregate_daily_data(receivals, purchase_orders, materials):
 
 # --- 2. Feature Engineering ---
 
-def create_features(df, daily_receivals, daily_po):
+def create_features_by_rm(df_rm, daily_receivals_rm, daily_po_rm):
     """
-    Creates features for the given dataframe (train or test).
-    'df' must have columns: rm_id, forecast_start_date, forecast_end_date
+    Creates features for a single rm_id's data.
+    'df_rm' must have columns: rm_id, forecast_start_date, forecast_end_date
     """
-    print(f"Creating features for {len(df)} rows...")
-    
-    # Use the index to uniquely identify each row after merges
-    original_index_name = df.index.name
-    features = df.reset_index()
-    
-    # Standardize the index column name
-    if 'index' not in features.columns and original_index_name is not None:
-        features = features.rename(columns={original_index_name: 'index'})
+    if df_rm.empty:
+        return pd.DataFrame()
 
+    features = df_rm.copy()
+    features['original_index'] = features.index
     
     # --- Date-based features ---
     features['window_length'] = (
@@ -150,84 +145,116 @@ def create_features(df, daily_receivals, daily_po):
     ).apply(lambda x: x.days + 1)
     
     features['end_month'] = features['forecast_end_date'].apply(lambda x: x.month)
-    features['end_day_of_year'] = features['forecast_end_date'].apply(lambda x: x.timetuple().tm_yday)
     
     # --- PO in Window feature ---
-    # Merge all POs onto the feature rows (many-to-many)
-    po_merged = pd.merge(
-        features,
-        daily_po,
-        on='rm_id',
-        how='left'
-    )
-    
-    # Filter for POs that fall inside the window for that row
-    po_in_window_mask = (po_merged['delivery_date'] >= po_merged['forecast_start_date']) & \
-                        (po_merged['delivery_date'] <= po_merged['forecast_end_date'])
-    
-    # Group by the original row index (now 'index') and sum the PO quantity
-    po_in_window_agg = po_merged[po_in_window_mask].groupby('index').quantity.sum().rename('po_in_window')
-    
-    # Merge the aggregated feature back
-    features = pd.merge(
-        features,
-        po_in_window_agg,
-        left_on='index',
-        right_index=True,
-        how='left'
-    ).fillna({'po_in_window': 0}) # Fill 0 for rows with no POs
-    
+    if not daily_po_rm.empty:
+        po_merged = pd.merge(
+            features,
+            daily_po_rm,
+            on='rm_id',
+            how='left'
+        )
+        
+        po_in_window_mask = (po_merged['delivery_date'] >= po_merged['forecast_start_date']) & \
+                            (po_merged['delivery_date'] <= po_merged['forecast_end_date'])
+        
+        po_in_window_agg = po_merged[po_in_window_mask].groupby('original_index').quantity.sum().rename('po_in_window')
+        
+        features = pd.merge(
+            features,
+            po_in_window_agg,
+            left_index=True,
+            right_index=True,
+            how='left'
+        ).fillna({'po_in_window': 0})
+    else:
+        features['po_in_window'] = 0
+        
     # --- Historical Features (relative to forecast_start_date) ---
-    print("  Creating historical features...")
     hist_agg_list = []
     
-    # Process one start_date at a time to avoid recomputing
     for start_date in features['forecast_start_date'].unique():
         ref_date = start_date - timedelta(days=1)
         hist_start_30d = ref_date - timedelta(days=29)
 
-        # Filter data for the 30-day history window
-        hist_rec_30d = daily_receivals[
-            (daily_receivals['date_arrival'] >= hist_start_30d) &
-            (daily_receivals['date_arrival'] <= ref_date)
+        hist_rec_30d = daily_receivals_rm[
+            (daily_receivals_rm['date_arrival'] >= hist_start_30d) &
+            (daily_receivals_rm['date_arrival'] <= ref_date)
         ]
-        hist_po_30d = daily_po[
-            (daily_po['delivery_date'] >= hist_start_30d) &
-            (daily_po['delivery_date'] <= ref_date)
+        hist_po_30d = daily_po_rm[
+            (daily_po_rm['delivery_date'] >= hist_start_30d) &
+            (daily_po_rm['delivery_date'] <= ref_date)
         ]
         
-        # Aggregate by rm_id
-        rec_agg = hist_rec_30d.groupby('rm_id').net_weight.sum().rename('hist_rec_30d')
-        po_agg = hist_po_30d.groupby('rm_id').quantity.sum().rename('hist_po_30d')
+        rec_agg_val = hist_rec_30d.net_weight.sum()
+        po_agg_val = hist_po_30d.quantity.sum()
         
-        # Combine and store
-        hist_agg = pd.concat([rec_agg, po_agg], axis=1).fillna(0).reset_index()
-        hist_agg['forecast_start_date'] = start_date
-        hist_agg_list.append(hist_agg)
+        hist_agg_list.append({
+            'forecast_start_date': start_date,
+            'hist_rec_30d': rec_agg_val,
+            'hist_po_30d': po_agg_val
+        })
         
-    # Merge all historical features back to the main feature set
     if hist_agg_list:
-        all_hist_agg = pd.concat(hist_agg_list, ignore_index=True)
+        all_hist_agg = pd.DataFrame(hist_agg_list)
         features = pd.merge(
             features,
             all_hist_agg,
-            on=['rm_id', 'forecast_start_date'],
+            on='forecast_start_date',
             how='left'
-        ).fillna(0) # Fill 0 for new rm_ids with no history
+        ).fillna(0)
     else:
         features['hist_rec_30d'] = 0
         features['hist_po_30d'] = 0
 
-    # Define feature columns and set index back
     feature_cols = [
-        'rm_id', 'window_length', 'end_month', 'end_day_of_year',
+        'rm_id', 'window_length', 'end_month',
         'po_in_window', 'hist_rec_30d', 'hist_po_30d'
     ]
     
-    # Add 'index' for target creation later
-    final_feature_cols = feature_cols + ['index', 'forecast_start_date', 'forecast_end_date']
+    final_feature_cols = feature_cols + ['original_index', 'forecast_start_date', 'forecast_end_date']
     
-    return features[final_feature_cols].set_index('index')
+    return features[final_feature_cols]
+
+def create_features(df, daily_receivals, daily_po):
+    """
+    Creates features for the given dataframe by processing one rm_id at a time.
+    """
+    print(f"Creating features for {len(df)} rows...")
+    
+    all_rms = df['rm_id'].unique()
+    all_features = []
+
+    for i, rm_id in enumerate(all_rms):
+        if (i + 1) % 50 == 0:
+            print(f"  Processing rm_id {i+1}/{len(all_rms)}")
+            
+        df_rm = df[df['rm_id'] == rm_id]
+        daily_receivals_rm = daily_receivals[daily_receivals['rm_id'] == rm_id]
+        daily_po_rm = daily_po[daily_po['rm_id'] == rm_id]
+        
+        features_rm = create_features_by_rm(df_rm, daily_receivals_rm, daily_po_rm)
+        all_features.append(features_rm)
+
+    if not all_features:
+        return pd.DataFrame()
+
+    final_features = pd.concat(all_features)
+    
+    # Define feature columns and set index back
+    feature_cols = [
+        'rm_id', 'window_length', 'end_month',
+        'po_in_window', 'hist_rec_30d', 'hist_po_30d'
+    ]
+    
+    # Add original index for target creation later
+    final_feature_cols = feature_cols + ['original_index', 'forecast_start_date', 'forecast_end_date']
+    
+    # Keep original index for target alignment
+    if 'original_index' in final_features.columns:
+        final_features = final_features.set_index('original_index', drop=False)
+    
+    return final_features
 
 
 # --- 3. Generate Training Data ---
@@ -235,58 +262,76 @@ def create_features(df, daily_receivals, daily_po):
 def generate_training_data(daily_receivals, daily_po, years_to_use):
     """
     Generates a training DataFrame by creating cumulative windows
-    from historical years.
+    from historical years, processing one rm_id at a time to save memory.
     """
     print("Generating training data...")
-    train_windows = []
-    all_rms = daily_receivals['rm_id'].unique()
     
-    for rm in all_rms:
+    all_rms = daily_receivals['rm_id'].unique()
+    X_train_list = []
+    y_train_list = []
+
+    for i, rm_id in enumerate(all_rms):
+        if (i + 1) % 50 == 0:
+            print(f"  Generating training data for rm_id {i+1}/{len(all_rms)}")
+
+        train_windows_rm = []
         for year in years_to_use:
             start_date = date(year, 1, 1)
-            # Max window is 151 days (Jan 1 to May 31)
             for days in range(1, 152): 
                 end_date = start_date + timedelta(days=days)
-                
-                # Stop if we cross into the prediction period
                 if end_date >= date(2025, 1, 1):
                     break
-                    
-                train_windows.append({
-                    'rm_id': rm,
+                train_windows_rm.append({
+                    'rm_id': rm_id,
                     'forecast_start_date': start_date,
                     'forecast_end_date': end_date
                 })
-                
-    train_df_raw = pd.DataFrame(train_windows)
-    
-    # Create features
-    X_train = create_features(train_df_raw, daily_receivals, daily_po)
-    
-    # --- Create targets (y_train) ---
-    print("  Creating training targets...")
-    # Merge raw windows with all receivals
-    merged_targets = pd.merge(
-        X_train.reset_index(),
-        daily_receivals,
-        on='rm_id',
-        how='left'
-    )
-    
-    # Filter for receivals that fall inside the window
-    target_mask = (merged_targets['date_arrival'] >= merged_targets['forecast_start_date']) & \
-                  (merged_targets['date_arrival'] <= merged_targets['forecast_end_date'])
-    
-    # Group by the original index and sum
-    y_agg = merged_targets[target_mask].groupby('index').net_weight.sum()
-    
-    # Create the final y_train Series, aligning with X_train's index
-    y_train = pd.Series(0, index=X_train.index, name='target')
-    y_train.update(y_agg) # Update with the summed values
+        
+        if not train_windows_rm:
+            continue
+            
+        train_df_rm = pd.DataFrame(train_windows_rm)
+        
+        # --- Create features for this rm_id ---
+        daily_receivals_rm = daily_receivals[daily_receivals['rm_id'] == rm_id]
+        daily_po_rm = daily_po[daily_po['rm_id'] == rm_id]
+        
+        X_train_rm = create_features_by_rm(train_df_rm, daily_receivals_rm, daily_po_rm)
+        
+        if X_train_rm.empty:
+            continue
+
+        # --- Create targets for this rm_id ---
+        merged_targets = pd.merge(
+            X_train_rm,
+            daily_receivals_rm,
+            on='rm_id',
+            how='left'
+        )
+        
+        target_mask = (merged_targets['date_arrival'] >= merged_targets['forecast_start_date']) & \
+                      (merged_targets['date_arrival'] <= merged_targets['forecast_end_date'])
+        
+        y_agg = merged_targets[target_mask].groupby('original_index').net_weight.sum()
+        
+        # The index of X_train_rm should be original_index to align with y_agg
+        X_train_rm = X_train_rm.set_index('original_index')
+        
+        y_train_rm = pd.Series(0, index=X_train_rm.index, name='target')
+        y_train_rm.update(y_agg)
+        
+        # Append to lists
+        X_train_list.append(X_train_rm)
+        y_train_list.append(y_train_rm)
+
+    # Concatenate all parts at the end
+    print("Concatenating all training data...")
+    X_train = pd.concat(X_train_list)
+    y_train = pd.concat(y_train_list)
     
     # Drop helper columns from X_train
     feature_cols = [
-        'rm_id', 'window_length', 'end_month', 'end_day_of_year',
+        'rm_id', 'window_length', 'end_month',
         'po_in_window', 'hist_rec_30d', 'hist_po_30d'
     ]
     
@@ -301,7 +346,7 @@ def main():
     
     # 2. Generate Training Data (use 2022, 2023, 2024 for training)
     X_train, y_train = generate_training_data(
-        daily_receivals, daily_po, years_to_use=[2022, 2023, 2024]
+        daily_receivals, daily_po, years_to_use=[2012,2013,2014,2015,2016,2017,2018,2019,2020,2021,2022, 2023, 2024]
     )
 
     # --- NEW: Export the training dataset ---
